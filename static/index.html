@@ -317,6 +317,27 @@ async function initLive2D() {
     statusEl.textContent = "Model loaded";
     setTimeout(() => statusEl.style.opacity = "0", 2000);
     buildParamInfo();
+
+    // ------------------------------------------------------------
+    // Fix: default bawaan model ini matanya ketutup (nilai default
+    // ParamEyeLOpen/ParamEyeROpen dari .moc3 mendekati 0). Paksa buka
+    // mata begitu model selesai load, supaya wajah default normal
+    // (mata kebuka), bukan merem. Ini cuma dijalankan sekali saat load
+    // — gesture AI lewat /face (misal AI mau bikin merem/kedip) tetap
+    // bisa override lewat setParam() seperti biasa sesudahnya.
+    // ------------------------------------------------------------
+    try {
+      const core = model.internalModel.coreModel;
+      const openEye = (id) => {
+        const info = paramInfo[id];
+        if (!info) return;
+        const v = info.max; // fully open
+        if (core.setParameterValueById) core.setParameterValueById(id, v);
+        else if (core.setParamFloat) core.setParamFloat(id, v);
+      };
+      openEye("ParamEyeLOpen");
+      openEye("ParamEyeROpen");
+    } catch (e) {}
   } catch (e) {
     statusEl.textContent = "⚠️ Gagal load model: " + (e && e.message ? e.message : e);
     console.error("Live2D load error:", e);
