@@ -48,16 +48,43 @@
   </form>
 </div>
 
+<!--
+  FIX (bug utama "model invalid / moc data ga valid"):
+  Link Cubism Core resmi di bawah ini SELALU auto-update ke versi Core
+  terbaru (sekarang sudah Cubism 5), sedangkan pixi-live2d-display@0.4.0
+  (versi original guansss) cuma paham API Cubism 4 — begitu Core-nya
+  naik ke v5, validasi moc3 di library lama itu gagal terus walau file
+  modelnya sendiri sehat. Solusi: pakai fork pixi-live2d-display yang
+  sudah mendukung Cubism 3-5 (dipakai juga oleh proyek Open LLM VTuber),
+  dipasangkan dengan PixiJS v7. API-nya sama persis (namespace PIXI.live2d),
+  jadi tidak perlu ubah kode lain di bawah.
+-->
 <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/pixi.js@6.5.10/dist/browser/pixi.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/cubism4.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pixi.js@7.x/dist/pixi.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/RaSan147/pixi-live2d-display@v0.5.0-ls-8/dist/cubism4.min.js"></script>
 <script>
 const MODEL_URL = "/static/model/qingyuan/qingyuan.model3.json";
 
 const statusEl = document.getElementById("status");
 const logEl = document.getElementById("log");
 const msgEl = document.getElementById("msg");
+const sendBtn = document.getElementById("send");
 const chatForm = document.getElementById("chat-box");
+
+// ------------------------------------------------------------
+// Fix: sebelumnya kalau WebSocket /chat belum OPEN (baru buka halaman,
+// atau lagi reconnect abis putus), sendMessage() diam-diam berhenti
+// tanpa kasih tahu apa-apa ke user — jadi tombol "Kirim"/Enter terasa
+// seperti tidak berfungsi padahal cuma menunggu koneksi. Sekarang input
+// & tombol dinonaktifkan selama belum siap, dengan placeholder yang
+// jelas, dan otomatis aktif lagi begitu koneksi tersambung.
+// ------------------------------------------------------------
+function setChatReady(ready) {
+  msgEl.disabled = !ready;
+  sendBtn.disabled = !ready;
+  msgEl.placeholder = ready ? "Ketik pesan ke Aoi..." : "Menyambungkan ke server...";
+}
+setChatReady(false);
 
 let model = null;
 let app = null;
@@ -503,6 +530,8 @@ function connectChat() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   chatWs = new WebSocket(`${proto}://${location.host}/chat`);
 
+  chatWs.onopen = () => setChatReady(true);
+
   chatWs.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === "reply") {
@@ -515,7 +544,11 @@ function connectChat() {
       addLog("aoi", "⚠️ " + msg.message);
     }
   };
-  chatWs.onclose = () => setTimeout(connectChat, 2000);
+  chatWs.onclose = () => {
+    setChatReady(false);
+    msgEl.placeholder = "Terputus, menyambung ulang...";
+    setTimeout(connectChat, 2000);
+  };
   chatWs.onerror = () => chatWs.close();
 }
 connectChat();
