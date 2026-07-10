@@ -2,7 +2,7 @@
 <html lang="id">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Aoi</title>
 <style>
   html, body { margin:0; padding:0; height:100%; background:#0f0f1a; font-family: sans-serif; overflow:hidden; }
@@ -13,6 +13,7 @@
   #chat-box {
     background:#1a1a2e; padding:10px; display:flex; gap:8px;
     border-top:1px solid #333; flex-shrink:0;
+    position:relative; z-index:10;
   }
   #log {
     background:#1a1a2e; color:#eee; font-size:13px;
@@ -24,11 +25,13 @@
   #log .aoi { color:#ff9ecb; }
   #msg {
     flex:1; padding:10px; border-radius:8px; border:1px solid #444;
-    background:#0f0f1a; color:#fff; font-size:14px;
+    background:#0f0f1a; color:#fff; font-size:16px; /* >=16px: cegah auto-zoom iOS Safari saat fokus */
+    touch-action:manipulation;
   }
   #send {
     padding:10px 18px; border-radius:8px; border:none;
     background:#ff79c6; color:#fff; font-weight:bold; font-size:14px;
+    touch-action:manipulation; cursor:pointer;
   }
 </style>
 </head>
@@ -39,22 +42,22 @@
     <div id="status">Connecting...</div>
   </div>
   <div id="log"></div>
-  <div id="chat-box">
-    <input id="msg" type="text" placeholder="Ketik pesan ke Aoi..." autocomplete="off">
-    <button id="send">Kirim</button>
-  </div>
+  <form id="chat-box" autocomplete="off">
+    <input id="msg" type="text" placeholder="Ketik pesan ke Aoi..." autocomplete="off" enterkeyhint="send">
+    <button id="send" type="submit">Kirim</button>
+  </form>
 </div>
 
 <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pixi.js@6.5.10/dist/browser/pixi.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/cubism4.min.js"></script>
 <script>
-const MODEL_URL = "/static/model/aoi/aaa.model3.json";
+const MODEL_URL = "/static/model/qingyuan/qingyuan.model3.json";
 
 const statusEl = document.getElementById("status");
 const logEl = document.getElementById("log");
 const msgEl = document.getElementById("msg");
-const sendBtn = document.getElementById("send");
+const chatForm = document.getElementById("chat-box");
 
 let model = null;
 let app = null;
@@ -66,6 +69,8 @@ async function initLive2D() {
   app = new PIXI.Application({
     view: document.getElementById("live2d-canvas"),
     resizeTo: document.getElementById("canvas-wrap"),
+    resolution: window.devicePixelRatio || 1,
+    autoDensity: true,
     backgroundAlpha: 0,
     autoStart: true,
   });
@@ -84,7 +89,7 @@ async function initLive2D() {
     // ------------------------------------------------------------
     // Posisi & skala — load dari localStorage kalau ada (persist walau reload)
     // ------------------------------------------------------------
-    const STORAGE_KEY = "aoi_avatar_transform";
+    const STORAGE_KEY = "aoi_avatar_transform_v2";
     const baseScale = Math.min(app.screen.width / model.width, app.screen.height / model.height) * 0.9;
 
     let saved = null;
@@ -109,6 +114,21 @@ async function initLive2D() {
     };
 
     const canvasWrap = document.getElementById("canvas-wrap");
+
+    // ------------------------------------------------------------
+    // Fix: PIXI `resizeTo` cuma dengerin event resize WINDOW, bukan
+    // perubahan ukuran elemen kontainernya sendiri. Jadi kalau
+    // #canvas-wrap mengecil/membesar gara-gara layout lain berubah
+    // (misal #log keisi pesan, chat-box muncul, dsb) tanpa window
+    // ikut resize, resolusi render PIXI jadi nggak sinkron sama
+    // ukuran CSS-nya → avatar keliatan melebar/gepeng (stretched).
+    // ResizeObserver di sini mantau #canvas-wrap langsung dan minta
+    // PIXI resize ulang tiap kali ukurannya benar-benar berubah.
+    // ------------------------------------------------------------
+    const resizeObserver = new ResizeObserver(() => {
+      app.resize();
+    });
+    resizeObserver.observe(canvasWrap);
 
     // ------------------------------------------------------------
     // Drag (geser X/Y) — 1 jari / mouse, presisi 1:1 ikut kursor
@@ -283,9 +303,9 @@ async function initLive2D() {
       setHeadParam("ParamAngleX", (aX.def || 0) + headX + aiAngleOffset.ParamAngleX);
       setHeadParam("ParamAngleY", (aY.def || 0) + headY + aiAngleOffset.ParamAngleY);
 
-      if (paramInfo.FacePositionZ) {
-        const fz = paramInfo.FacePositionZ;
-        setHeadParam("FacePositionZ", (fz.def || 0) + aiAngleOffset.FacePositionZ);
+      if (paramInfo.ParamAngleZ) {
+        const fz = paramInfo.ParamAngleZ;
+        setHeadParam("ParamAngleZ", (fz.def || 0) + aiAngleOffset.ParamAngleZ);
       }
       if (paramInfo.BodyAngleX) {
         const bX = paramInfo.BodyAngleX;
@@ -300,6 +320,27 @@ async function initLive2D() {
     statusEl.textContent = "Model loaded";
     setTimeout(() => statusEl.style.opacity = "0", 2000);
     buildParamInfo();
+
+    // ------------------------------------------------------------
+    // Fix: default bawaan model ini matanya ketutup (nilai default
+    // ParamEyeLOpen/ParamEyeROpen dari .moc3 mendekati 0). Paksa buka
+    // mata begitu model selesai load, supaya wajah default normal
+    // (mata kebuka), bukan merem. Ini cuma dijalankan sekali saat load
+    // — gesture AI lewat /face (misal AI mau bikin merem/kedip) tetap
+    // bisa override lewat setParam() seperti biasa sesudahnya.
+    // ------------------------------------------------------------
+    try {
+      const core = model.internalModel.coreModel;
+      const openEye = (id) => {
+        const info = paramInfo[id];
+        if (!info) return;
+        const v = info.max; // fully open
+        if (core.setParameterValueById) core.setParameterValueById(id, v);
+        else if (core.setParamFloat) core.setParamFloat(id, v);
+      };
+      openEye("ParamEyeLOpen");
+      openEye("ParamEyeROpen");
+    } catch (e) {}
   } catch (e) {
     statusEl.textContent = "⚠️ Gagal load model: " + (e && e.message ? e.message : e);
     console.error("Live2D load error:", e);
@@ -333,17 +374,25 @@ function buildParamInfo() {
 const BACKEND_RANGE = {
   ParamMouthOpenY:  [0, 1],
   ParamMouthForm:   [-1, 1],
-  lianhong:         [0, 1],
-  ParamBrowLForm:   [-1, 1],
-  ParamBrowRForm:   [-1, 1],
+  LianHong:         [0, 1],   // CheekPuff — blush
+  ShengQi:          [0, 1],   // FaceAngry
+  ParamBrowLForm:   [-1, 1],  // Brows
+  LiuLei:           [0, 1],   // Tears
+  AXY:              [0, 1],   // HeartEyes
+  BVS2:             [0, 1],   // EyeRoll
+  ParamEyeLSmile:   [0, 1],   // EyeSmile
+  KouShui:          [0, 1],   // Drool
+  LianHei:          [0, 1],   // DarkAura
+  BXS:              [0, 1],   // HeartHands
+  BVS:              [0, 1],   // PeaceSign
   ParamEyeLOpen:    [0, 1],
   ParamEyeROpen:    [0, 1],
   ParamEyeBallX:    [-1, 1],
   ParamEyeBallY:    [-1, 1],
-  Param68:          [0, 1],
+  TuShe:            [0, 1],   // TongueOut
   ParamAngleX:      [-30, 30],
   ParamAngleY:      [-30, 30],
-  FacePositionZ:    [-30, 30],
+  ParamAngleZ:      [-30, 30],
 };
 
 // Gain ekstra untuk param sudut kepala — AI biasanya kirim nilai "penuh" di sekitar
@@ -353,7 +402,7 @@ const BACKEND_RANGE = {
 const ANGLE_GAIN = {
   ParamAngleX:   2.2,
   ParamAngleY:   2.2,
-  FacePositionZ: 3.5,
+  ParamAngleZ:   3.5,
 };
 
 // Param sudut kepala yang dikontrol bersama oleh:
@@ -361,8 +410,8 @@ const ANGLE_GAIN = {
 //  - gesture dari AI (lewat /face websocket)
 // Supaya tidak rebutan tiap frame, AI gesture disimpan sebagai OFFSET
 // dan dijumlahkan ke base (default + cursor-follow) oleh ticker.
-const HEAD_ANGLE_IDS = new Set(["ParamAngleX", "ParamAngleY", "FacePositionZ"]);
-const aiAngleOffset = { ParamAngleX: 0, ParamAngleY: 0, FacePositionZ: 0 };
+const HEAD_ANGLE_IDS = new Set(["ParamAngleX", "ParamAngleY", "ParamAngleZ"]);
+const aiAngleOffset = { ParamAngleX: 0, ParamAngleY: 0, ParamAngleZ: 0 };
 
 function setParam(id, rawValue) {
   if (!model) return;
@@ -402,16 +451,14 @@ function setParam(id, rawValue) {
           const tt = (bMin === 0) ? 0 : rawValue / bMin;
           value = info.def + Math.min(tt, 1) * (info.min - info.def);
         }
-      } else if (id === "Param68") {
-        // Lidah (吐舌): 0 backend = posisi default asli model (lidah masuk).
+      } else {
+        // Param unipolar (0..x, misal: expression toggle kayak ShengQi/LiuLei/AXY/dst,
+        // atau TuShe buat lidah): 0 backend = posisi DEFAULT asli model, bMax backend =
+        // titik ekstrem terjauh dari default. Dicek info.max vs info.min biar tetap benar
+        // walau suatu saat default-nya bukan di titik minimum.
         const t = Math.min(Math.max(rawValue / bMax, 0), 1);
         const target = (info.max !== info.def) ? info.max : info.min;
         value = info.def + t * (target - info.def);
-      } else {
-        // Param unipolar (0..x): scale langsung ke rentang asli model
-        let t = (rawValue - bMin) / (bMax - bMin);
-        t = Math.min(Math.max(t, 0), 1);
-        value = info.min + t * (info.max - info.min);
       }
 
       // Hard clamp ke rentang asli model (jangan sampai tembus)
@@ -481,6 +528,24 @@ function addLog(cls, text) {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
+// ------------------------------------------------------------
+// Fix: audio TTS kadang gagal autoplay pertama kali di iOS/Safari
+// mobile karena kebijakan browser (audio hanya boleh main setelah
+// ada "user gesture" LANGSUNG). Reply dari server datang async
+// setelah gesture-nya lewat, jadi audio.play() bisa ke-block diam2.
+// Solusi: "unlock" audio context sekali di gesture tap/klik pertama
+// user (submit form ini termasuk gesture), sebelum balasan async tiba.
+// ------------------------------------------------------------
+let audioUnlocked = false;
+function unlockAudio() {
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+  try {
+    const a = new Audio();
+    a.play().catch(() => {});
+  } catch (e) {}
+}
+
 function sendMessage() {
   const text = msgEl.value.trim();
   if (!text || !chatWs || chatWs.readyState !== WebSocket.OPEN) return;
@@ -489,24 +554,23 @@ function sendMessage() {
   msgEl.value = "";
 }
 
-sendBtn.onclick = sendMessage;
-
-// ------------------------------------------------------------
-// Enter key handler — aman untuk IME (Pinyin/Chinese, Japanese,
-// Korean, dll). Saat user pilih karakter dari popup kandidat IME,
-// browser tetap kirim keydown "Enter", jadi HARUS di-skip kalau
-// e.isComposing true (lagi proses komposisi huruf), atau kalau
-// e.keyCode === 229 (fallback untuk browser lama/Safari yang
-// kadang tidak set isComposing dengan benar).
-// ------------------------------------------------------------
-let isComposing = false;
-msgEl.addEventListener("compositionstart", () => { isComposing = true; });
-msgEl.addEventListener("compositionend", () => { isComposing = false; });
-
-msgEl.addEventListener("keydown", (e) => {
-  if (e.key !== "Enter") return;
-  if (e.isComposing || isComposing || e.keyCode === 229) return; // masih proses IME, jangan kirim
+// Fix utama bug mobile: pakai <form>+submit (bukan cuma klik tombol / keydown
+// manual) supaya tombol "Enter/Go/Send" di keyboard virtual Android & iOS
+// selalu ke-trigger dengan benar — sebelumnya keydown 'Enter' sering tidak
+// terpanggil sama sekali di beberapa keyboard mobile (Gboard/Samsung/dll),
+// karena keyboard itu tidak selalu mengirim event keydown key:'Enter' yang
+// standar, tapi HAMPIR SELALU memicu event 'submit' kalau input ada di <form>.
+chatForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  unlockAudio();
   sendMessage();
+});
+
+// Cegah Enter buat konfirmasi teks prediktif (IME) ikut ngirim pesan duluan.
+msgEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.isComposing) {
+    e.preventDefault();
+  }
 });
 </script>
 </body>
