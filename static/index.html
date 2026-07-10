@@ -2,7 +2,7 @@
 <html lang="id">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Aoi</title>
 <style>
   html, body { margin:0; padding:0; height:100%; background:#0f0f1a; font-family: sans-serif; overflow:hidden; }
@@ -13,6 +13,7 @@
   #chat-box {
     background:#1a1a2e; padding:10px; display:flex; gap:8px;
     border-top:1px solid #333; flex-shrink:0;
+    position:relative; z-index:10;
   }
   #log {
     background:#1a1a2e; color:#eee; font-size:13px;
@@ -24,11 +25,13 @@
   #log .aoi { color:#ff9ecb; }
   #msg {
     flex:1; padding:10px; border-radius:8px; border:1px solid #444;
-    background:#0f0f1a; color:#fff; font-size:14px;
+    background:#0f0f1a; color:#fff; font-size:16px; /* >=16px: cegah auto-zoom iOS Safari saat fokus */
+    touch-action:manipulation;
   }
   #send {
     padding:10px 18px; border-radius:8px; border:none;
     background:#ff79c6; color:#fff; font-weight:bold; font-size:14px;
+    touch-action:manipulation; cursor:pointer;
   }
 </style>
 </head>
@@ -39,10 +42,10 @@
     <div id="status">Connecting...</div>
   </div>
   <div id="log"></div>
-  <div id="chat-box">
-    <input id="msg" type="text" placeholder="Ketik pesan ke Aoi..." autocomplete="off">
-    <button id="send">Kirim</button>
-  </div>
+  <form id="chat-box" autocomplete="off">
+    <input id="msg" type="text" placeholder="Ketik pesan ke Aoi..." autocomplete="off" enterkeyhint="send">
+    <button id="send" type="submit">Kirim</button>
+  </form>
 </div>
 
 <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
@@ -54,7 +57,7 @@ const MODEL_URL = "/static/model/qingyuan/qingyuan.model3.json";
 const statusEl = document.getElementById("status");
 const logEl = document.getElementById("log");
 const msgEl = document.getElementById("msg");
-const sendBtn = document.getElementById("send");
+const chatForm = document.getElementById("chat-box");
 
 let model = null;
 let app = null;
@@ -525,6 +528,24 @@ function addLog(cls, text) {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
+// ------------------------------------------------------------
+// Fix: audio TTS kadang gagal autoplay pertama kali di iOS/Safari
+// mobile karena kebijakan browser (audio hanya boleh main setelah
+// ada "user gesture" LANGSUNG). Reply dari server datang async
+// setelah gesture-nya lewat, jadi audio.play() bisa ke-block diam2.
+// Solusi: "unlock" audio context sekali di gesture tap/klik pertama
+// user (submit form ini termasuk gesture), sebelum balasan async tiba.
+// ------------------------------------------------------------
+let audioUnlocked = false;
+function unlockAudio() {
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+  try {
+    const a = new Audio();
+    a.play().catch(() => {});
+  } catch (e) {}
+}
+
 function sendMessage() {
   const text = msgEl.value.trim();
   if (!text || !chatWs || chatWs.readyState !== WebSocket.OPEN) return;
@@ -533,9 +554,23 @@ function sendMessage() {
   msgEl.value = "";
 }
 
-sendBtn.onclick = sendMessage;
+// Fix utama bug mobile: pakai <form>+submit (bukan cuma klik tombol / keydown
+// manual) supaya tombol "Enter/Go/Send" di keyboard virtual Android & iOS
+// selalu ke-trigger dengan benar — sebelumnya keydown 'Enter' sering tidak
+// terpanggil sama sekali di beberapa keyboard mobile (Gboard/Samsung/dll),
+// karena keyboard itu tidak selalu mengirim event keydown key:'Enter' yang
+// standar, tapi HAMPIR SELALU memicu event 'submit' kalau input ada di <form>.
+chatForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  unlockAudio();
+  sendMessage();
+});
+
+// Cegah Enter buat konfirmasi teks prediktif (IME) ikut ngirim pesan duluan.
 msgEl.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") sendMessage();
+  if (e.key === "Enter" && e.isComposing) {
+    e.preventDefault();
+  }
 });
 </script>
 </body>
