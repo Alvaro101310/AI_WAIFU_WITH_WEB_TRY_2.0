@@ -342,6 +342,37 @@ async function initLive2D() {
       }
     });
 
+    // ------------------------------------------------------------
+    // Ticker kedua: fade halus + auto-idle-reset utk SEMUA param
+    // ekspresi (mata, mulut, alis, gestur tangan, dll) yang di-set
+    // AI lewat /face. Lihat penjelasan lengkap di deklarasi
+    // faceTarget/faceCurrent/lastParamSetTime di bawah (dekat
+    // `let paramInfo = {}`).
+    //
+    // FIX bug "mata merem terus" & "bayangan tangan numpuk": param
+    // yang gak disebut lagi di respons AI berikutnya sekarang otomatis
+    // fade balik ke posisi idle sendiri, gak nyangkut selamanya di
+    // nilai terakhir yang pernah dikirim.
+    // ------------------------------------------------------------
+    app.ticker.add(() => {
+      const now = Date.now();
+      for (const id in faceCurrent) {
+        const pinfo = paramInfo[id];
+        if (!pinfo) continue;
+        const lastSet = lastParamSetTime[id] || 0;
+        const idle = (now - lastSet) > FACE_HOLD_MS;
+        let goal;
+        if (idle) {
+          const override = IDLE_TARGET_OVERRIDE[id];
+          goal = override === "max" ? pinfo.max : (override === "min" ? pinfo.min : pinfo.def);
+        } else {
+          goal = faceTarget[id];
+        }
+        faceCurrent[id] += (goal - faceCurrent[id]) * FACE_RESET_LERP;
+        setHeadParam(id, faceCurrent[id]);
+      }
+    });
+
     statusEl.textContent = "Model loaded";
     setTimeout(() => statusEl.style.opacity = "0", 2000);
     buildParamInfo();
@@ -378,6 +409,37 @@ async function initLive2D() {
 // dan idle/reset balik ke DEFAULT VALUE asli model (bukan 0 paksa).
 // ------------------------------------------------------------
 let paramInfo = {}; // id -> { min, max, def }
+
+// ------------------------------------------------------------
+// FIX "mata merem terus" / "bayangan tangan numpuk": SEMUA param
+// ekspresi (bukan head-angle — itu sudah ada sistem offset-nya
+// sendiri di atas) sekarang gak langsung ditulis ke core waktu
+// setParam() dipanggil. Nilainya disimpan sebagai TARGET, lalu
+// ticker (lihat initLive2D) yang gerakin pelan-pelan (smooth) tiap
+// frame ke arah target itu.
+//
+// Kalau suatu param id gak disebut lagi di respons AI berikutnya
+// selama > FACE_HOLD_MS, ticker otomatis anggap "idle" dan geser
+// targetnya sendiri ke posisi netral — jadi ekspresi/gestur lama
+// otomatis pudar, gak nyangkut selamanya nunggu di-reset manual.
+//
+//   faceTarget[id]       -> nilai tujuan (dari AI, lewat setParam)
+//   faceCurrent[id]      -> nilai yang lagi dirender (di-lerp tiap frame)
+//   lastParamSetTime[id] -> kapan terakhir param ini disebut AI
+// ------------------------------------------------------------
+const FACE_HOLD_MS    = 700;  // toleransi jeda (ms) sebelum mulai fade balik idle
+const FACE_RESET_LERP = 0.08; // kecepatan fade balik idle (0..1, makin besar makin cepat)
+const faceTarget = {};
+const faceCurrent = {};
+const lastParamSetTime = {};
+
+// Beberapa param defaultnya di file .moc3 BUKAN posisi "netral" yang wajar
+// buat idle (contoh: mata — default asli model ini hampir merem/0). Override
+// di sini kalau target idle-nya harus beda dari info.def bawaan model.
+const IDLE_TARGET_OVERRIDE = {
+  ParamEyeLOpen: "max", // idle = mata kebuka lebar, BUKAN default model yg merem
+  ParamEyeROpen: "max",
+};
 
 function buildParamInfo() {
   if (!model) return;
@@ -488,8 +550,19 @@ function setParam(id, rawValue) {
 
       // Hard clamp ke rentang asli model (jangan sampai tembus)
       value = Math.min(Math.max(value, info.min), info.max);
+
+      // Jangan tulis langsung — simpan sebagai target buat sistem fade/hold
+      // (lihat ticker di initLive2D). Ini yang benerin "mata merem terus"
+      // dan "bayangan tangan numpuk": param yang gak disebut lagi di
+      // respons berikutnya otomatis fade balik sendiri, gak nyangkut.
+      faceTarget[id] = value;
+      if (faceCurrent[id] === undefined) faceCurrent[id] = value;
+      lastParamSetTime[id] = Date.now();
+      return;
     }
 
+    // Param tanpa info/range dikenal di model ini (jarang terjadi) — tulis
+    // langsung seperti biasa, gak ada info min/max/def buat sistem fade.
     if (core.setParameterValueById) {
       core.setParameterValueById(id, value);
     } else if (core.setParamFloat) {
